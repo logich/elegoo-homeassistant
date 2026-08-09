@@ -172,7 +172,22 @@ The integration provides a comprehensive set of entities including **Live Camera
 **Filament / Canvas A1–A4 sensors (CC1 and CC2):** Gcode file-detail and optional proxy sensors are created at setup time (proxy extras are only added when a proxy URL is configured). They stay **available** between prints; when there is no current job data they report **unknown** rather than becoming **unavailable**, so automations and history are not disrupted each time a print ends.
 
 ## 🤖 Automation Blueprints
-Includes a blueprint for mobile notifications. [Import it here.](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https://github.com/danielcherubini/elegoo-homeassistant/blob/main/blueprints/automation/elegoo_printer/elegoo_printer_progress.yaml)
+
+**Print Progress Notifications** — standard mobile notifications for progress,
+status changes, completion, and printer errors. Works on Android and iOS.
+[Import it here.](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https://github.com/danielcherubini/elegoo-homeassistant/blob/main/blueprints/automation/elegoo_printer/elegoo_printer_progress.yaml)
+
+**Live Activity (iOS)** — tracks the print as a Lock Screen / Dynamic Island
+card with a native progress bar and an on-device countdown, updating about ten
+times per print regardless of layer count.
+[Import it here.](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https://github.com/danielcherubini/elegoo-homeassistant/blob/main/blueprints/automation/elegoo_printer/elegoo_printer_live_activity.yaml)
+
+> ⚠️ Live Activities are an iOS Labs feature currently available **only in the
+> TestFlight build** of the companion app, and require iOS 17.2+ and HA Core
+> 2026.7.0+. If nothing appears on your phone, it is almost certainly the app's
+> token registration or the iOS push-to-start budget rather than the blueprint —
+> Home Assistant cannot detect either, so a clean log proves nothing. The
+> blueprint description covers how to tell them apart.
 
 ## 🧵 Spoolman Integration
 Compatible with
