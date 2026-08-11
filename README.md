@@ -178,8 +178,8 @@ status changes, completion, and printer errors. Works on Android and iOS.
 [Import it here.](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https://github.com/danielcherubini/elegoo-homeassistant/blob/main/blueprints/automation/elegoo_printer/elegoo_printer_progress.yaml)
 
 **Live Activity (iOS)** — tracks the print as a Lock Screen / Dynamic Island
-card with a native progress bar and an on-device countdown, updating about ten
-times per print regardless of layer count.
+card with a native progress bar and an on-device countdown, updating about
+twenty times per print regardless of layer count.
 [Import it here.](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https://github.com/danielcherubini/elegoo-homeassistant/blob/main/blueprints/automation/elegoo_printer/elegoo_printer_live_activity.yaml)
 
 > ⚠️ Live Activities are an iOS Labs feature currently available **only in the

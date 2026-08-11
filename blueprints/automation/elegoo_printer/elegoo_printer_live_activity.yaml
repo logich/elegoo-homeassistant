@@ -86,12 +86,21 @@ blueprint:
       name: Updates Per Print
       description: >-
         Roughly how many progress updates to send over a whole print,
-        regardless of layer count. 10 is comfortably within iOS rate limits.
-      default: 10
+        regardless of layer count.
+
+
+        Note that Live Activity updates are **silent** — no banner, no sound,
+        the card just changes. That makes a working card and a stale one look
+        identical, so the gap between updates is the window in which you cannot
+        tell them apart. On a 4-hour print, 10 updates means ~24 minutes of
+        apparent inactivity; 20 halves that. Both are far inside iOS rate
+        limits, which are concerned with rapid-fire updates rather than one
+        every few minutes.
+      default: 20
       selector:
         number:
           min: 4
-          max: 30
+          max: 40
           mode: slider
     dashboard_url:
       name: Dashboard Path (Optional)
