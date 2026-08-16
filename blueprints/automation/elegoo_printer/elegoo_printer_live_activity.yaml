@@ -173,10 +173,16 @@ variables:
   # task_id is set ~1ms before the printer reports "printing", holds through
   # "complete", and only clears well into idle -- so it is stable for the whole
   # activity lifetime.
+  # NOTE: this is rendered once, when the run starts. That is deliberate for
+  # progress updates (task_id is stable mid-print) and required for the
+  # completion hold, whose delay would otherwise let it re-render against a
+  # task_id that has since cleared. The start branch must NOT use it -- see
+  # the comment there.
   task_id: >-
-    {{ states(task_id_entity) if task_id_entity != '' else 'na' }}
+    {{ states(task_id_entity) if task_id_entity != '' else '' }}
   live_tag: >-
-    elegoo_{{ (task_id if task_id not in ['unknown', 'unavailable', ''] else 'print') | replace(' ', '') }}
+    elegoo_{{ (task_id if task_id not in ['unknown', 'unavailable', 'none', '']
+               else 'print') | replace(' ', '') }}
 
   layer: "{{ states(current_layer_entity) | int(0) }}"
   total: "{{ states(total_layers_entity) | int(0) }}"
@@ -220,13 +226,31 @@ actions:
           - condition: trigger
             id: print_started
         sequence:
+          # task_id does not always land with current_status. Observed lag of
+          # up to ~2 s after the printer reports "printing", and it sits at
+          # "unknown" between jobs. Starting the activity before it arrives
+          # tags the card differently from every later update, which leaves two
+          # cards on screen -- one frozen at 0% forever, because nothing ever
+          # addresses it again.
+          #
+          # Wait for a real task id, then re-derive the tag inline. The
+          # run-scoped live_tag was rendered when this run began and would
+          # still hold the stale value, so it deliberately is not used here.
+          - wait_template: >-
+              {{ task_id_entity != '' and states(task_id_entity)
+                 not in ['unknown', 'unavailable', 'none', ''] }}
+            timeout: "00:00:30"
+            continue_on_timeout: true
           - device_id: !input notify_device
             domain: mobile_app
             type: notify
             title: "{{ activity_title }}"
             message: "Print started"
             data:
-              tag: "{{ live_tag }}"
+              tag: >-
+                {% set tid = states(task_id_entity) if task_id_entity != '' else '' %}
+                elegoo_{{ (tid if tid not in ['unknown', 'unavailable', 'none', '']
+                           else 'print') | replace(' ', '') }}
               live_update: true
               progress: 0
               progress_max: 100
