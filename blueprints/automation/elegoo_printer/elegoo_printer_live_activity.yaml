@@ -102,6 +102,24 @@ blueprint:
           min: 4
           max: 40
           mode: slider
+    stall_minutes:
+      name: Stall Alert After
+      description: >-
+        Alert if the layer counter does not advance for this long while the
+        printer still reports "printing".
+
+
+        This is a backstop for a printer that wedges *without* reporting
+        paused. A genuine pause is caught immediately by its own trigger, and
+        does not wait for this timeout. Keep it comfortably longer than your
+        slowest layer plus start-of-print homing, or you will get false alarms.
+      default: 15
+      selector:
+        number:
+          min: 5
+          max: 120
+          unit_of_measurement: minutes
+          mode: slider
     dashboard_url:
       name: Dashboard Path (Optional)
       description: >-
@@ -150,6 +168,7 @@ variables:
   notifications_per_print: !input notifications_per_print
   dashboard_url: !input dashboard_url
   clear_delay: !input clear_delay
+  stall_minutes: !input stall_minutes
 
   printer_device: "{{ device_id(current_layer_entity) }}"
 
@@ -216,6 +235,25 @@ triggers:
     entity_id: !input print_status_entity
     to: "complete"
     id: print_done
+  # A pause is the ONLY signal this protocol gives for "needs a human".
+  # print_error stays 'none' and error_status_reason stays 'ok' throughout --
+  # and the latter is populated from print history, never from live status, so
+  # it cannot fire mid-print at all. Observed twice in 10 days, both genuine
+  # interventions, never once during normal printing.
+  - trigger: state
+    entity_id: !input print_status_entity
+    to: "paused"
+    id: print_paused
+  - trigger: state
+    entity_id: !input print_status_entity
+    from: "paused"
+    id: print_resumed
+  # Backstop: the layer counter stops advancing while still "printing".
+  - trigger: state
+    entity_id: !input current_layer_entity
+    for:
+      minutes: !input stall_minutes
+    id: print_stalled
 
 conditions: []
 
@@ -297,6 +335,95 @@ actions:
               notification_icon: "mdi:printer-3d-nozzle"
               notification_icon_color: "#03A9F4"
               url: "{{ dashboard_url }}"
+
+      # ---- paused: a human is needed -------------------------------------
+      - conditions:
+          - condition: trigger
+            id: print_paused
+        sequence:
+          # Reflect it on the card, for when you do look at it...
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            title: "{{ activity_title }}"
+            message: "Paused - needs attention"
+            data:
+              tag: "{{ live_tag }}"
+              live_update: true
+              progress: "{{ layer | int(0) }}"
+              progress_max: "{{ total | int(1) }}"
+              critical_text: "PAUSED"
+              notification_icon: "mdi:pause-octagon"
+              notification_icon_color: "#FF9800"
+              url: "{{ dashboard_url }}"
+          # ...but a Live Activity update is SILENT -- no banner, no sound. It
+          # can never be the alert. A paused printer is losing a print until
+          # someone walks over to it, so this one interrupts.
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            title: "Print paused"
+            message: >-
+              {{ activity_title }} paused at layer {{ layer }}/{{ total }} and
+              needs attention.
+            data:
+              notification_icon: "mdi:pause-octagon"
+              url: "{{ dashboard_url }}"
+              push:
+                interruption-level: time-sensitive
+
+      # ---- resumed: put the card back ------------------------------------
+      - conditions:
+          - condition: trigger
+            id: print_resumed
+          # Leaving 'paused' for 'stopping' is an abandoned print, not a
+          # resume. Only treat a return to the printing cycle as recovery.
+          - condition: template
+            value_template: >-
+              {{ trigger.to_state.state in ['printing', 'lifting', 'dropping', 'homing'] }}
+        sequence:
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            title: "{{ activity_title }}"
+            message: "Resumed - layer {{ layer }}/{{ total }}"
+            data:
+              tag: "{{ live_tag }}"
+              live_update: true
+              progress: "{{ layer | int(0) }}"
+              progress_max: "{{ total | int(1) }}"
+              critical_text: "{{ percent }}%"
+              chronometer: "{{ end_ts | int(0) > 0 }}"
+              when: "{{ end_ts | int(0) }}"
+              notification_icon: "mdi:printer-3d-nozzle"
+              notification_icon_color: "#03A9F4"
+              url: "{{ dashboard_url }}"
+
+      # ---- stalled: no layers, and not a reported pause -------------------
+      - conditions:
+          - condition: trigger
+            id: print_stalled
+          - condition: template
+            value_template: >-
+              {{ current_status_entity != '' and states(current_status_entity) == 'printing' }}
+          # A real pause has already alerted on its own branch; do not
+          # double-report the same incident.
+          - condition: template
+            value_template: >-
+              {{ print_status_entity != '' and states(print_status_entity) != 'paused' }}
+        sequence:
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            title: "Print may be stuck"
+            message: >-
+              {{ activity_title }} has not advanced past layer {{ layer }}/{{ total }}
+              for {{ stall_minutes }} minutes, but still reports printing.
+            data:
+              notification_icon: "mdi:progress-alert"
+              url: "{{ dashboard_url }}"
+              push:
+                interruption-level: time-sensitive
 
       # ---- finish, hold, then clear --------------------------------------
       - conditions:
