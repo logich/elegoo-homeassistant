@@ -1,0 +1,469 @@
+blueprint:
+  name: Elegoo Printer Live Activity (iOS)
+  description: >-
+    Tracks a print as an iOS **Live Activity** — a Lock Screen / Dynamic Island
+    card with a native progress bar and a countdown that ticks on-device.
+
+
+    ⚠️ **Requirements — read before importing.** Live Activities are an iOS
+    Labs feature and are currently available **only in the TestFlight build**
+    of the companion app, not the public App Store release. You also need
+    **iOS 17.2+** and **Home Assistant Core 2026.7.0+**.
+
+
+    ⚠️ **If nothing appears on your phone, it is almost never this blueprint.**
+    Home Assistant hands the payload to APNS and never learns what the device
+    did with it, so a successful automation run, an HTTP 200, and a clean log
+    prove only that HA dispatched — never that anything rendered. Before
+    editing anything here, check the two device-side causes:
+
+
+    1. **Token registration.** Live Activities need a token handshake between
+    the app and HA. Installing an app update invalidates it, and new tokens are
+    only issued once the new build is **launched** — "sync with server" alone
+    does not do it. After any app update: let it install, open the app and
+    leave it foregrounded a few seconds, then sync.
+
+
+    2. **Push-to-start budget.** iOS rate-limits how often a *new* activity may
+    be launched by push. Rapid start/stop testing drains it, after which new
+    activities fail silently for minutes to hours. Wait it out rather than
+    chasing it.
+
+
+    Check the companion app's **Settings → Live Activities** screen for status
+    and to dismiss stuck activities.
+  domain: automation
+  author: Logan Browne
+  homeassistant:
+    min_version: 2026.7.0
+  source_url: https://github.com/danielcherubini/elegoo-homeassistant/blob/main/blueprints/automation/elegoo_printer/elegoo_printer_live_activity.yaml
+  input:
+    current_layer_entity:
+      name: Current Layer Sensor
+      description: >-
+        The printer's current layer sensor (ends in '_current_layer'). Layer
+        count, progress, end time, filename and task id are all discovered
+        automatically from the same device.
+      selector:
+        entity:
+          domain: sensor
+          integration: elegoo_printer
+    current_status_entity:
+      name: Current Status Sensor
+      description: >-
+        The machine status sensor (ends in '_current_status'). Used to start
+        the activity and to gate progress updates.
+      selector:
+        entity:
+          domain: sensor
+          integration: elegoo_printer
+          device_class: enum
+    print_status_entity:
+      name: Print Status Sensor
+      description: >-
+        The print status sensor (ends in '_print_status'). This is the only
+        sensor with a true 'complete' state — the machine status sensor has no
+        completion value, it just returns to 'idle'.
+      selector:
+        entity:
+          domain: sensor
+          integration: elegoo_printer
+          device_class: enum
+    notify_device:
+      name: iOS Device
+      description: The iPhone or iPad to show the Live Activity on.
+      selector:
+        device:
+          integration: mobile_app
+    activity_title:
+      name: Activity Title
+      description: >-
+        Static header text for the card. This cannot be changed once an
+        activity has started, so avoid putting changing values in it.
+      default: 3D Printer
+    notifications_per_print:
+      name: Updates Per Print
+      description: >-
+        Roughly how many progress updates to send over a whole print,
+        regardless of layer count.
+
+
+        Note that Live Activity updates are **silent** — no banner, no sound,
+        the card just changes. That makes a working card and a stale one look
+        identical, so the gap between updates is the window in which you cannot
+        tell them apart. On a 4-hour print, 10 updates means ~24 minutes of
+        apparent inactivity; 20 halves that. Both are far inside iOS rate
+        limits, which are concerned with rapid-fire updates rather than one
+        every few minutes.
+      default: 20
+      selector:
+        number:
+          min: 4
+          max: 40
+          mode: slider
+    stall_minutes:
+      name: Stall Alert After
+      description: >-
+        Alert if the layer counter does not advance for this long while the
+        printer still reports "printing".
+
+
+        This is a backstop for a printer that wedges *without* reporting
+        paused. A genuine pause is caught immediately by its own trigger, and
+        does not wait for this timeout. Keep it comfortably longer than your
+        slowest layer plus start-of-print homing, or you will get false alarms.
+      default: 15
+      selector:
+        number:
+          min: 5
+          max: 120
+          unit_of_measurement: minutes
+          mode: slider
+    dashboard_url:
+      name: Dashboard Path (Optional)
+      description: >-
+        Where to go when the card is tapped, e.g. '/resin-printer/0'. A
+        relative Home Assistant path, not a full URL.
+      default: ""
+    clear_delay:
+      name: Hold Completed Card For
+      description: >-
+        How long the finished card stays on screen at 100% before it is
+        cleared.
+      default: 120
+      selector:
+        number:
+          min: 0
+          max: 600
+          unit_of_measurement: seconds
+          mode: slider
+
+# `parallel` is load-bearing, not incidental.
+#
+# The completion sequence holds an activity at 100% for a while before clearing
+# it. Under `mode: restart` any trigger arriving during that hold cancels the
+# run -- and a NEW print firing current_layer does exactly that -- so the
+# activity is never cleared and the summary never sends, stranding a card that
+# only the companion app can dismiss. Conditions cannot defend against this:
+# restart kills the old run before the new run evaluates anything.
+#
+# `mode: single` is not the answer either. task_id and current_layer change a
+# few milliseconds BEFORE current_status flips to 'printing', so under single
+# the layer run can still be in flight and the start push gets dropped.
+#
+# `parallel` lets the completion hold run to completion while layer triggers
+# continue to be serviced independently. Runs are milliseconds long, so 10
+# concurrent slots is ample.
+mode: parallel
+max: 10
+max_exceeded: silent
+
+variables:
+  current_layer_entity: !input current_layer_entity
+  current_status_entity: !input current_status_entity
+  print_status_entity: !input print_status_entity
+  notify_device: !input notify_device
+  activity_title: !input activity_title
+  notifications_per_print: !input notifications_per_print
+  dashboard_url: !input dashboard_url
+  clear_delay: !input clear_delay
+  stall_minutes: !input stall_minutes
+
+  printer_device: "{{ device_id(current_layer_entity) }}"
+
+  # Sibling entities from the same device. All of these live in
+  # PRINTER_STATUS_COMMON (or, for print_status, in both the resin and FDM
+  # sets), so they exist for resin, FDM, MQTT and CC2 printers alike.
+  total_layers_entity: >-
+    {{ device_entities(printer_device) | select('search', '_total_layers$') | first | default('', true) }}
+  percent_complete_entity: >-
+    {{ device_entities(printer_device) | select('search', '_percent_complete$') | first | default('', true) }}
+  end_time_entity: >-
+    {{ device_entities(printer_device) | select('search', '_end_time$') | first | default('', true) }}
+  file_name_entity: >-
+    {{ device_entities(printer_device) | select('search', '_file_name$') | first | default('', true) }}
+  task_id_entity: >-
+    {{ device_entities(printer_device) | select('search', '_task_id$') | first | default('', true) }}
+
+  # Per-print tag. Reusing one fixed tag across prints means a stranded
+  # activity silently absorbs every later print's updates, because reusing a
+  # tag UPDATES the existing activity rather than starting a new one.
+  # task_id is set ~1ms before the printer reports "printing", holds through
+  # "complete", and only clears well into idle -- so it is stable for the whole
+  # activity lifetime.
+  # NOTE: this is rendered once, when the run starts. That is deliberate for
+  # progress updates (task_id is stable mid-print) and required for the
+  # completion hold, whose delay would otherwise let it re-render against a
+  # task_id that has since cleared. The start branch must NOT use it -- see
+  # the comment there.
+  task_id: >-
+    {{ states(task_id_entity) if task_id_entity != '' else '' }}
+  live_tag: >-
+    elegoo_{{ (task_id if task_id not in ['unknown', 'unavailable', 'none', '']
+               else 'print') | replace(' ', '') }}
+
+  layer: "{{ states(current_layer_entity) | int(0) }}"
+  total: "{{ states(total_layers_entity) | int(0) }}"
+  interval: "{{ [(total | int(0)) // (notifications_per_print | int(10)), 1] | max }}"
+  percent: "{{ states(percent_complete_entity) | float(0) | round(0) | int }}"
+
+  # The countdown is driven by the absolute end_time timestamp rather than the
+  # remaining-time sensor. That sensor is stored in milliseconds and merely
+  # *displayed* in minutes, and the display unit is user-overridable per
+  # entity -- so arithmetic on states() there is not portable. MQTT printers
+  # report no end_time at all, so the chronometer is switched off for them
+  # rather than showing a bogus timer.
+  end_ts: >-
+    {{ as_timestamp(states(end_time_entity), 0) | int
+       if end_time_entity != '' and states(end_time_entity) not in ['unknown', 'unavailable', 'none']
+       else 0 }}
+
+triggers:
+  - trigger: state
+    entity_id: !input current_status_entity
+    to: "printing"
+    id: print_started
+  - trigger: state
+    entity_id: !input current_layer_entity
+    id: progress_update
+  # Completion must watch print_status: current_status has no completion
+  # value, it simply returns to 'idle' -- indistinguishable from an idle
+  # printer or a manual stop. Note print_status also passes through 'stopping'
+  # on a perfectly normal completion, so that is not an abort signal.
+  - trigger: state
+    entity_id: !input print_status_entity
+    to: "complete"
+    id: print_done
+  # A pause is the ONLY signal this protocol gives for "needs a human".
+  # print_error stays 'none' and error_status_reason stays 'ok' throughout --
+  # and the latter is populated from print history, never from live status, so
+  # it cannot fire mid-print at all. Observed twice in 10 days, both genuine
+  # interventions, never once during normal printing.
+  - trigger: state
+    entity_id: !input print_status_entity
+    to: "paused"
+    id: print_paused
+  - trigger: state
+    entity_id: !input print_status_entity
+    from: "paused"
+    id: print_resumed
+  # Backstop: the layer counter stops advancing while still "printing".
+  - trigger: state
+    entity_id: !input current_layer_entity
+    for:
+      minutes: !input stall_minutes
+    id: print_stalled
+
+conditions: []
+
+actions:
+  - choose:
+      # ---- start the activity -------------------------------------------
+      - conditions:
+          - condition: trigger
+            id: print_started
+        sequence:
+          # task_id does not always land with current_status. Observed lag of
+          # up to ~2 s after the printer reports "printing", and it sits at
+          # "unknown" between jobs. Starting the activity before it arrives
+          # tags the card differently from every later update, which leaves two
+          # cards on screen -- one frozen at 0% forever, because nothing ever
+          # addresses it again.
+          #
+          # Wait for a real task id, then re-derive the tag inline. The
+          # run-scoped live_tag was rendered when this run began and would
+          # still hold the stale value, so it deliberately is not used here.
+          - wait_template: >-
+              {{ task_id_entity != '' and states(task_id_entity)
+                 not in ['unknown', 'unavailable', 'none', ''] }}
+            timeout: "00:00:30"
+            continue_on_timeout: true
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            title: "{{ activity_title }}"
+            message: "Print started"
+            data:
+              tag: >-
+                {% set tid = states(task_id_entity) if task_id_entity != '' else '' %}
+                elegoo_{{ (tid if tid not in ['unknown', 'unavailable', 'none', '']
+                           else 'print') | replace(' ', '') }}
+              live_update: true
+              progress: 0
+              progress_max: 100
+              critical_text: "0%"
+              notification_icon: "mdi:printer-3d-nozzle"
+              notification_icon_color: "#03A9F4"
+              url: "{{ dashboard_url }}"
+
+      # ---- throttled progress updates ------------------------------------
+      - conditions:
+          - condition: trigger
+            id: progress_update
+          # Layer 0 is the reset at the start of a print, handled above.
+          - condition: template
+            value_template: "{{ layer | int(0) > 0 }}"
+          - condition: template
+            value_template: >-
+              {{ current_status_entity != '' and states(current_status_entity) == 'printing' }}
+          # Fire on the integer layer, never on the float percentage: modulo on
+          # a float misses milestones. The layer sensor increments by exactly 1
+          # with no gaps, so exact-match arithmetic is reliable.
+          - condition: template
+            value_template: >-
+              {{ total | int(0) > 0 and (layer | int(0)) % (interval | int(1)) == 0 }}
+        sequence:
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            # The title is repeated on every payload on purpose. Whichever
+            # payload creates the activity fixes its title permanently, and
+            # that is not reliably the start push -- if the start push is
+            # dropped, a progress update creates the activity instead, and
+            # without a title here iOS falls back to showing the app name.
+            title: "{{ activity_title }}"
+            message: "Layer {{ layer }}/{{ total }}"
+            data:
+              tag: "{{ live_tag }}"
+              live_update: true
+              progress: "{{ layer | int(0) }}"
+              progress_max: "{{ total | int(1) }}"
+              critical_text: "{{ percent }}%"
+              chronometer: "{{ end_ts | int(0) > 0 }}"
+              when: "{{ end_ts | int(0) }}"
+              notification_icon: "mdi:printer-3d-nozzle"
+              notification_icon_color: "#03A9F4"
+              url: "{{ dashboard_url }}"
+
+      # ---- paused: a human is needed -------------------------------------
+      - conditions:
+          - condition: trigger
+            id: print_paused
+        sequence:
+          # Reflect it on the card, for when you do look at it...
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            title: "{{ activity_title }}"
+            message: "Paused - needs attention"
+            data:
+              tag: "{{ live_tag }}"
+              live_update: true
+              progress: "{{ layer | int(0) }}"
+              progress_max: "{{ total | int(1) }}"
+              critical_text: "PAUSED"
+              notification_icon: "mdi:pause-octagon"
+              notification_icon_color: "#FF9800"
+              url: "{{ dashboard_url }}"
+          # ...but a Live Activity update is SILENT -- no banner, no sound. It
+          # can never be the alert. A paused printer is losing a print until
+          # someone walks over to it, so this one interrupts.
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            title: "Print paused"
+            message: >-
+              {{ activity_title }} paused at layer {{ layer }}/{{ total }} and
+              needs attention.
+            data:
+              notification_icon: "mdi:pause-octagon"
+              url: "{{ dashboard_url }}"
+              push:
+                interruption-level: time-sensitive
+
+      # ---- resumed: put the card back ------------------------------------
+      - conditions:
+          - condition: trigger
+            id: print_resumed
+          # Leaving 'paused' for 'stopping' is an abandoned print, not a
+          # resume. Only treat a return to the printing cycle as recovery.
+          - condition: template
+            value_template: >-
+              {{ trigger.to_state.state in ['printing', 'lifting', 'dropping', 'homing'] }}
+        sequence:
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            title: "{{ activity_title }}"
+            message: "Resumed - layer {{ layer }}/{{ total }}"
+            data:
+              tag: "{{ live_tag }}"
+              live_update: true
+              progress: "{{ layer | int(0) }}"
+              progress_max: "{{ total | int(1) }}"
+              critical_text: "{{ percent }}%"
+              chronometer: "{{ end_ts | int(0) > 0 }}"
+              when: "{{ end_ts | int(0) }}"
+              notification_icon: "mdi:printer-3d-nozzle"
+              notification_icon_color: "#03A9F4"
+              url: "{{ dashboard_url }}"
+
+      # ---- stalled: no layers, and not a reported pause -------------------
+      - conditions:
+          - condition: trigger
+            id: print_stalled
+          - condition: template
+            value_template: >-
+              {{ current_status_entity != '' and states(current_status_entity) == 'printing' }}
+          # A real pause has already alerted on its own branch; do not
+          # double-report the same incident.
+          - condition: template
+            value_template: >-
+              {{ print_status_entity != '' and states(print_status_entity) != 'paused' }}
+        sequence:
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            title: "Print may be stuck"
+            message: >-
+              {{ activity_title }} has not advanced past layer {{ layer }}/{{ total }}
+              for {{ stall_minutes }} minutes, but still reports printing.
+            data:
+              notification_icon: "mdi:progress-alert"
+              url: "{{ dashboard_url }}"
+              push:
+                interruption-level: time-sensitive
+
+      # ---- finish, hold, then clear --------------------------------------
+      - conditions:
+          - condition: trigger
+            id: print_done
+        sequence:
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            title: "{{ activity_title }}"
+            message: "Print complete"
+            data:
+              tag: "{{ live_tag }}"
+              live_update: true
+              progress: 100
+              progress_max: 100
+              critical_text: "100%"
+              notification_icon: "mdi:check-circle"
+              notification_icon_color: "#4CAF50"
+              url: "{{ dashboard_url }}"
+          - delay:
+              seconds: "{{ clear_delay | int(120) }}"
+          # Ending an activity requires this exact message with the same tag.
+          # `live_update: false` is not a documented field and does not end it.
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            message: "clear_notification"
+            data:
+              tag: "{{ live_tag }}"
+          # A plain notification, deliberately: it persists in the shade after
+          # the Live Activity is gone. Note this one has no live_update, which
+          # is also why it still arrives when Live Activities are broken --
+          # a useful signal when debugging.
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            title: "Print Complete"
+            message: >-
+              {{ states(file_name_entity) if file_name_entity != '' else 'Print finished' }}
+            data:
+              notification_icon: "mdi:check-circle"
+              url: "{{ dashboard_url }}"
