@@ -258,7 +258,22 @@ The integration provides a comprehensive set of entities including **Live Camera
 **Print file (CC2):** a select listing the G-code files in the printer's local storage, read over MQTT (method 1044) every ten minutes and on the **Refresh File List** button. Choosing a file does not start it: press **Print Selected File**, which prints from the tray chosen in **Print Tray** (Automatic or A1-A4, Canvas printers only) with bed leveling on, as in the slicer - or pass the select's state to `start_print` as `filename` to skip leveling.
 
 ## 🤖 Automation Blueprints
-Includes a blueprint for mobile notifications. [Import it here.](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https://github.com/danielcherubini/elegoo-homeassistant/blob/main/blueprints/automation/elegoo_printer/elegoo_printer_progress.yaml)
+
+**Print Progress Notifications** — standard mobile notifications for progress,
+status changes, completion, and printer errors. Works on Android and iOS.
+[Import it here.](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https://github.com/danielcherubini/elegoo-homeassistant/blob/main/blueprints/automation/elegoo_printer/elegoo_printer_progress.yaml)
+
+**Live Activity (iOS)** — tracks the print as a Lock Screen / Dynamic Island
+card with a native progress bar and an on-device countdown, updating about
+twenty times per print regardless of layer count.
+[Import it here.](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https://github.com/danielcherubini/elegoo-homeassistant/blob/main/blueprints/automation/elegoo_printer/elegoo_printer_live_activity.yaml)
+
+> ⚠️ Live Activities are an iOS Labs feature currently available **only in the
+> TestFlight build** of the companion app, and require iOS 17.2+ and HA Core
+> 2026.7.0+. If nothing appears on your phone, it is almost certainly the app's
+> token registration or the iOS push-to-start budget rather than the blueprint —
+> Home Assistant cannot detect either, so a clean log proves nothing. The
+> blueprint description covers how to tell them apart.
 
 ## 🧵 Spoolman Integration
 Compatible with
